@@ -19,6 +19,17 @@ typedef PARSER_PROC(Parser_Proc);
 #define PARSER_MAP_PROC(name) Parser_Result name(Parser_Result result, size_t index)
 typedef PARSER_MAP_PROC(Parser_Map_Proc);
 
+#define PARSER_ALLOCATOR(name) void * name(size_t size)
+typedef PARSER_ALLOCATOR(Alloc);
+
+PARSER_ALLOCATOR(parser_alloc_default) {
+    void *result = malloc(size);
+
+    return result;
+}
+
+Alloc *parser_alloc = parser_alloc_default;
+
 struct Parser_List {
     Parser * elems;
     size_t   num_elems;
@@ -45,7 +56,7 @@ void
 parser_push(Parser_List *list, Parser p) {
     if ( list->num_elems >= list->cap ) {
         size_t new_cap = (list->cap < 16) ? 16 : list->cap*2;
-        void *mem = malloc(sizeof(Parser)*new_cap);
+        void *mem = parser_alloc(sizeof(Parser)*new_cap);
         memcpy(mem, list->elems, list->num_elems*sizeof(Parser));
         free(list->elems);
 
@@ -98,7 +109,7 @@ void
 parser_result_push(Parser_Result_List *list, Parser_Result p) {
     if ( list->num_elems >= list->cap ) {
         size_t new_cap = (list->cap < 16) ? 16 : list->cap*2;
-        void *mem = malloc(sizeof(Parser_Result)*new_cap);
+        void *mem = parser_alloc(sizeof(Parser_Result)*new_cap);
         memcpy(mem, list->elems, list->num_elems*sizeof(Parser_Result));
         free(list->elems);
 
@@ -263,7 +274,7 @@ Parser
 chr(char c) {
     Parser p = {};
 
-    p.str  = (char *)malloc(1);
+    p.str  = (char *)parser_alloc(1);
     p.str[0] = c;
     p.proc = [](Parser p, Parser_State state) {
         if ( !state.success ) {
@@ -442,7 +453,10 @@ Parser
 map(Parser p, Parser_Map_Proc *proc) {
     Parser result = {};
 
-    result.p = (Parser *)malloc(sizeof(Parser));
+    /* @INFO: weil c++ dämlich ist, kann im lambda kein "einfangen" der kontextvariablen
+     * erfolgen, denn sonst entspricht das lambda nicht mehr dem typedef
+     */
+    result.p = (Parser *)parser_alloc(sizeof(Parser));
     result.p->str = p.str;
     for ( int i = 0; i < 10; ++i ) {
         result.p->n[i]   = p.n[i];
@@ -471,7 +485,10 @@ Parser
 error_map(Parser p, Parser_Map_Proc *proc) {
     Parser result = {};
 
-    result.p = (Parser *)malloc(sizeof(Parser));
+    /* @INFO: weil c++ dämlich ist, kann im lambda kein "einfangen" der kontextvariablen
+     * erfolgen, denn sonst entspricht das lambda nicht mehr dem typedef
+     */
+    result.p = (Parser *)parser_alloc(sizeof(Parser));
     result.p->str = p.str;
     for ( int i = 0; i < 10; ++i ) {
         result.p->n[i]   = p.n[i];
@@ -502,7 +519,10 @@ Parser
 many(Parser p) {
     Parser result = {};
 
-    result.p = (Parser *)malloc(sizeof(Parser));
+    /* @INFO: weil c++ dämlich ist, kann im lambda kein "einfangen" der kontextvariablen
+     * erfolgen, denn sonst entspricht das lambda nicht mehr dem typedef
+     */
+    result.p = (Parser *)parser_alloc(sizeof(Parser));
     result.p->str = p.str;
     for ( int i = 0; i < 10; ++i ) {
         result.p->n[i]   = p.n[i];
@@ -537,7 +557,10 @@ Parser
 many1(Parser p) {
     Parser result = {};
 
-    result.p = (Parser *)malloc(sizeof(Parser));
+    /* @INFO: weil c++ dämlich ist, kann im lambda kein "einfangen" der kontextvariablen
+     * erfolgen, denn sonst entspricht das lambda nicht mehr dem typedef
+     */
+    result.p = (Parser *)parser_alloc(sizeof(Parser));
     result.p->str = p.str;
     for ( int i = 0; i < 10; ++i ) {
         result.p->n[i]   = p.n[i];

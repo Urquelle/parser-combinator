@@ -6,8 +6,17 @@
 
 #include "parser.cpp"
 
+PARSER_ALLOCATOR(custom_alloc) {
+    printf("%zd bytes reserviert\n", size);
+    void *mem = malloc(size);
+
+    return mem;
+}
+
 int main(int argc, char const* argv[]) {
     using namespace Urq::api;
+
+    Urq::parser_alloc = custom_alloc;
 
     Parser_State result = {};
     Parser parser = {};
