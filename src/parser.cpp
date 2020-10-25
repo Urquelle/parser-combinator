@@ -1,5 +1,7 @@
 #include <initializer_list>
 
+namespace Urq {
+
 struct Parser;
 struct Parser_Value;
 struct Parser_State;
@@ -7,9 +9,15 @@ struct Parser_Result;
 struct Parser_List;
 
 Parser_Result parser_result_str(char *str, size_t len);
+Parser_State  parser_update_state(Parser_State in, size_t index, Parser_Result r);
+Parser_State  parser_update_result(Parser_State in, Parser_Result r);
+Parser_State  parser_update_error(Parser_State in, char *msg);
 
 #define PARSER_PROC(name) Parser_State name(Parser p, Parser_State state)
 typedef PARSER_PROC(Parser_Proc);
+
+#define PARSER_MAP_PROC(name) Parser_Result name(Parser_Result result, size_t index)
+typedef PARSER_MAP_PROC(Parser_Map_Proc);
 
 struct Parser_List {
     Parser * elems;
@@ -24,8 +32,10 @@ struct Parser_Result_List {
 };
 
 struct Parser {
-    char c;
     char *str;
+    char n[10];
+    Parser_Map_Proc *map_proc;
+    Parser *p;
 
     Parser_List   sequence;
     Parser_Proc * proc;
@@ -114,28 +124,72 @@ parser_result_entry(Parser_Result_List *list, size_t i) {
 
 struct Parser_State {
     bool success;
+    char *msg;
+
     char *val;
     Parser_Result result;
     size_t index;
 };
 
-Parser whitespace = {
-    ' ', NULL, {}, [](Parser p, Parser_State state) {
-        Parser_State result = {};
+Parser
+parser_create(Parser_Proc *proc) {
+    Parser result = {};
 
+    result.proc = proc;
+
+    return result;
+}
+
+Parser whitespace = parser_create(
+    [](Parser p, Parser_State state) {
         char *s = state.val+state.index;
         while ( *s == ' ' || *s == '\t' || *s == '\r' || *s == '\v' || *s == '\n' ) {
             s++;
         }
 
-        result.success = true;
-        result.val     = state.val;
-        result.result  = parser_result_str(" ", 1);
-        result.index   = s-state.val;
-
-        return result;
+        return parser_update_state(state, s-state.val, parser_result_str(state.val+state.index, s-(state.val+state.index)));
     }
-};
+);
+
+Parser digits = parser_create(
+    [](Parser p, Parser_State state) {
+        char *s = state.val+state.index;
+
+        if ( !strlen(s) ) {
+            return parser_update_error(state, "digits: ende der eingabe erreicht");
+        }
+
+        while ( *s >= '0' && *s <= '9' ) {
+            s++;
+        }
+
+        if (s == state.val) {
+            return parser_update_error(state, "digits: keine ziffern gefunden");
+        }
+
+        return parser_update_state(state, s-state.val, parser_result_str(state.val+state.index, s-(state.val+state.index)));
+    }
+);
+
+Parser letters = parser_create(
+    [](Parser p, Parser_State state) {
+        char *s = state.val+state.index;
+
+        if ( !strlen(s) ) {
+            return parser_update_error(state, "letters: ende der eingabe erreicht");
+        }
+
+        while ( *s >= 'A' && *s <= 'Z' || *s >= 'a' && *s <= 'z' ) {
+            s++;
+        }
+
+        if (s == state.val) {
+            return parser_update_error(state, "letters: keine buchstaben gefunden");
+        }
+
+        return parser_update_state(state, s-state.val, parser_result_str(state.val+state.index, s-(state.val+state.index)));
+    }
+);
 
 Parser_Result
 parser_result_chr(char c) {
@@ -168,33 +222,76 @@ parser_result_arr(Parser_Result_List arr) {
     return result;
 }
 
+Parser_State
+parser_update_state(Parser_State in, size_t index, Parser_Result r) {
+    Parser_State result = {};
+
+    result.success = true;
+    result.val     = in.val;
+    result.result  = r;
+    result.index   = index;
+
+    return result;
+}
+
+Parser_State
+parser_update_result(Parser_State in, Parser_Result r) {
+    Parser_State result = {};
+
+    result.success = true;
+    result.val     = in.val;
+    result.index   = in.index;
+    result.result  = r;
+
+    return result;
+}
+
+Parser_State
+parser_update_error(Parser_State in, char *msg) {
+    Parser_State result = {};
+
+    result.success = false;
+    result.val     = in.val;
+    result.index   = in.index;
+    result.result  = in.result;
+    result.msg     = msg;
+
+    return result;
+}
+
 Parser
-parser_char(char c) {
+chr(char c) {
     Parser p = {};
 
-    p.c  = c;
+    p.str  = (char *)malloc(1);
+    p.str[0] = c;
     p.proc = [](Parser p, Parser_State state) {
-        Parser_State result = {};
-
-        if ( state.val[state.index] == p.c ) {
-            result.success = true;
-            result.val = state.val;
-            result.result = parser_result_chr(p.c);
-            result.index = state.index + 1;
+        if ( !state.success ) {
+            return state;
         }
 
-        return result;
+        Parser_State result = {};
+
+        if ( state.val[state.index] == p.str[0] ) {
+            return parser_update_state(state, state.index + 1, parser_result_chr(p.str[0]));
+        }
+
+        return parser_update_error(state, "chr: das gesuchte zeichen wurde nicht gefunden");
     };
 
     return p;
 }
 
 Parser
-parser_str(char *str) {
+str(char *str) {
     Parser p = {};
 
     p.str  = str;
     p.proc = [](Parser p, Parser_State state) {
+        if ( !state.success ) {
+            return state;
+        }
+
         Parser_State result = {};
 
         size_t len = strlen(p.str);
@@ -211,20 +308,65 @@ parser_str(char *str) {
         }
 
         if ( string_found ) {
-            result.success = true;
-            result.val = state.val;
-            result.result = parser_result_str(state.val+state.index, len);
-            result.index = state.index + len;
+            return parser_update_state(state, state.index + len,
+                    parser_result_str(state.val+state.index, len));
         }
 
-        return result;
+        return parser_update_error(state, "str: die gesuchte zeichenkette wurde nicht gefunden");
     };
 
     return p;
 }
 
 Parser
-parser_sequence_of(std::initializer_list<Parser> s) {
+number(int n) {
+    Parser p = {};
+
+    int count = 0;
+    int cnd = 0;
+    int temp = 0;
+    int i;
+
+    if ( n >> 31 ) {
+        n = ~n + 1;
+        for(temp = n; temp != 0; temp /= 10, count++);
+        p.n[0] = 0x2D;
+        count++;
+        cnd = 1;
+    } else {
+        for(temp = n; temp != 0; temp /= 10, count++);
+    }
+
+    for(i = count-1, temp = n; i >= cnd; i--) {
+        p.n[i] = (temp % 10) + 0x30;
+        temp /= 10;
+    }
+
+    p.proc = [](Parser p, Parser_State state) {
+        if ( !state.success ) {
+            return state;
+        }
+
+        size_t len = strlen(p.n);
+
+        if (strlen(state.val+state.index) < len) {
+            return parser_update_error(state, "number: unerwartet das ende erreicht");
+        }
+
+        for ( int i = 0; i < len; ++i ) {
+            if ( p.n[i] != (state.val+state.index)[i] ) {
+                return parser_update_error(state, "number: nummer wurde nicht erkannt");
+            }
+        }
+
+        return parser_update_state(state, state.index+len, parser_result_str(p.n, len));
+    };
+
+    return p;
+}
+
+Parser
+sequence_of(std::initializer_list<Parser> s) {
     Parser p = {};
 
     Parser_List sequence = {};
@@ -234,6 +376,10 @@ parser_sequence_of(std::initializer_list<Parser> s) {
 
     p.sequence  = sequence;
     p.proc = [](Parser p, Parser_State state) {
+        if ( !state.success ) {
+            return state;
+        }
+
         Parser_State result = {};
 
         Parser_State new_state = state;
@@ -244,7 +390,6 @@ parser_sequence_of(std::initializer_list<Parser> s) {
             new_state = seq_p.proc(seq_p, new_state);
 
             if ( !new_state.success ) {
-                printf("fehler aufgetreten\n");
                 return new_state;
             }
 
@@ -260,20 +405,211 @@ parser_sequence_of(std::initializer_list<Parser> s) {
     return p;
 }
 
+Parser
+choice(std::initializer_list<Parser> s) {
+    Parser p = {};
+
+    Parser_List sequence = {};
+    for ( Parser i : s ) {
+        parser_push(&sequence, i);
+    }
+
+    p.sequence  = sequence;
+    p.proc = [](Parser p, Parser_State state) {
+        if ( !state.success ) {
+            return state;
+        }
+
+        Parser_State result = {};
+        for ( int i = 0; i < p.sequence.num_elems; ++i ) {
+            Parser seq_p = parser_entry(&p.sequence, i);
+            Parser_State new_state = seq_p.proc(seq_p, state);
+
+            if ( new_state.success ) {
+                return new_state;
+            }
+
+            result = new_state;
+        }
+
+        return result;
+    };
+
+    return p;
+}
+
+Parser
+map(Parser p, Parser_Map_Proc *proc) {
+    Parser result = {};
+
+    result.p = (Parser *)malloc(sizeof(Parser));
+    result.p->str = p.str;
+    for ( int i = 0; i < 10; ++i ) {
+        result.p->n[i]   = p.n[i];
+    }
+    result.p->p   = p.p;
+    result.p->sequence = p.sequence;
+    result.p->proc = p.proc;
+    result.p->map_proc = p.map_proc;
+
+    result.map_proc = proc;
+
+    result.proc = [](Parser p, Parser_State state) {
+        Parser_State new_state = p.p->proc(*p.p, state);
+
+        if ( !new_state.success ) {
+            return new_state;
+        }
+
+        return parser_update_state(new_state, new_state.index, p.map_proc(new_state.result, new_state.index));
+    };
+
+    return result;
+}
+
+Parser
+error_map(Parser p, Parser_Map_Proc *proc) {
+    Parser result = {};
+
+    result.p = (Parser *)malloc(sizeof(Parser));
+    result.p->str = p.str;
+    for ( int i = 0; i < 10; ++i ) {
+        result.p->n[i]   = p.n[i];
+    }
+    result.p->p   = p.p;
+    result.p->sequence = p.sequence;
+    result.p->proc = p.proc;
+    result.p->map_proc = p.map_proc;
+
+    result.map_proc = proc;
+
+    result.proc = [](Parser p, Parser_State state) {
+        Parser_State new_state = p.p->proc(*p.p, state);
+
+        if ( new_state.success ) {
+            return new_state;
+        }
+
+        Parser_Result map_proc_result = p.map_proc(new_state.result, new_state.index);
+
+        return parser_update_error(new_state, map_proc_result.str.val);
+    };
+
+    return result;
+}
+
+Parser
+many(Parser p) {
+    Parser result = {};
+
+    result.p = (Parser *)malloc(sizeof(Parser));
+    result.p->str = p.str;
+    for ( int i = 0; i < 10; ++i ) {
+        result.p->n[i]   = p.n[i];
+    }
+    result.p->p   = p.p;
+    result.p->sequence = p.sequence;
+    result.p->proc = p.proc;
+    result.p->map_proc = p.map_proc;
+
+    result.proc = [](Parser p, Parser_State state) {
+        Parser_Result_List results = {};
+        Parser_State new_state = state;
+
+        for ( ;; ) {
+            new_state = p.p->proc(*p.p, new_state);
+
+            if ( new_state.success ) {
+                parser_result_push(&results, new_state.result);
+                continue;
+            }
+
+            break;
+        }
+
+        return parser_update_result(new_state, parser_result_arr(results));
+    };
+
+    return result;
+}
+
+Parser
+many1(Parser p) {
+    Parser result = {};
+
+    result.p = (Parser *)malloc(sizeof(Parser));
+    result.p->str = p.str;
+    for ( int i = 0; i < 10; ++i ) {
+        result.p->n[i]   = p.n[i];
+    }
+    result.p->p   = p.p;
+    result.p->sequence = p.sequence;
+    result.p->proc = p.proc;
+    result.p->map_proc = p.map_proc;
+
+    result.proc = [](Parser p, Parser_State state) {
+        Parser_Result_List results = {};
+        Parser_State new_state = state;
+
+        for ( ;; ) {
+            new_state = p.p->proc(*p.p, new_state);
+
+            if ( new_state.success ) {
+                parser_result_push(&results, new_state.result);
+                continue;
+            }
+
+            break;
+        }
+
+        if ( results.num_elems == 0 ) {
+            return parser_update_error(state, "many1: konnte keinen treffer erzielen");
+        }
+
+        return parser_update_result(new_state, parser_result_arr(results));
+    };
+
+    return result;
+}
+
 void
-parser_run(Parser p, char *str) {
+chain() {
+    /* @AUFGABE: implementieren */
+}
+
+Parser_State
+run(Parser p, char *str) {
     Parser_State state = {};
 
-    state.val = str;
-    state.index = 0;
+    state.success = true;
+    state.val     = str;
+    state.index   = 0;
 
     Parser_State result = p.proc(p, state);
 
-    if ( result.success ) {
-        printf("yippie\n");
-        return;
-    }
-
-    printf("hat nicht gegeht\n");
+    return result;
 }
+
+namespace api {
+    using Urq::chr;
+    using Urq::str;
+    using Urq::number;
+    using Urq::sequence_of;
+    using Urq::choice;
+    using Urq::many;
+    using Urq::many1;
+    using Urq::whitespace;
+    using Urq::digits;
+    using Urq::letters;
+    using Urq::run;
+    using Urq::parser_result_str;
+    using Urq::parser_update_state;
+    using Urq::parser_update_error;
+
+    using Urq::Parser;
+    using Urq::Parser_State;
+    using Urq::Parser_Result;
+};
+
+};
 

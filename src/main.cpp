@@ -7,13 +7,42 @@
 #include "parser.cpp"
 
 int main(int argc, char const* argv[]) {
-    Parser p = parser_sequence_of({
-        parser_str("hallo du!"),
-        whitespace,
-        parser_str("wie gehts?")
-    });
+    using namespace Urq::api;
 
-    parser_run(p, "hallo du!   wie gehts?");
+    Parser_State result = {};
+    Parser parser = {};
+
+    parser = letters;
+    result = run(parser, "asd12fas");
+
+    parser = digits;
+    result = run(parser, "12fas");
+
+    parser = sequence_of({
+        letters,
+        digits,
+        letters
+    });
+    result = run(parser, "abcd1234efgh");
+
+    parser = choice({
+        letters,
+        digits
+    });
+    result = run(parser, "123abc");
+    result = run(parser, "abc123");
+
+    parser = many(choice({
+        letters,
+        digits
+    }));
+    result = run(parser, "**123abc");
+
+    parser = many1(choice({
+        letters,
+        digits
+    }));
+    result = run(parser, "**123abc");
 
     return 0;
 }
