@@ -8,6 +8,8 @@ typedef ALLOCATOR(Alloc);
 
 #define allocs(name) (name *)alloc(sizeof(name))
 
+#define BYTES(n) n
+
 ALLOCATOR(alloc_default) {
     printf("%zd bytes speicher reserviert\n", size);
 
@@ -20,13 +22,22 @@ Alloc *alloc = alloc_default;
 
 enum Op {
     OP_MOV_IMM_REG = 0x10,
-    OP_MOV_REG_REG = 0x11,
-    OP_MOV_REG_MEM = 0x12,
-    OP_MOV_MEM_REG = 0x13,
+    OP_MOV_REG_REG,
+    OP_MOV_REG_MEM,
+    OP_MOV_MEM_REG,
 
-    OP_ADD_REG_REG = 0x14,
+    OP_ADD_REG_REG,
 
-    OP_JMP_NEQ     = 0x15,
+    OP_JMP_NEQ,
+
+    OP_PSH_IMM,
+    OP_PSH_REG,
+    OP_POP,
+
+    OP_CAL_IMM,
+    OP_CAL_REG,
+
+    OP_RET,
 
     OP_COUNT,
 };
@@ -48,11 +59,12 @@ enum Reg {
 
 struct Cpu {
     uint8_t  * mem;
-    uint64_t   size;
+    size_t     size;
 
-    uint8_t    pc; // program counter
-    uint16_t   sp; // stack pointer
-    uint16_t   fp; // frame pointer
+    uint16_t   pc; // program counter
+    size_t     sp; // stack pointer
+    size_t     fp; // frame pointer
+    uint16_t   stack_frame_size;
     uint16_t   regs[REG_COUNT];
 };
 
@@ -91,93 +103,154 @@ mem_create(size_t size) {
 }
 
 uint8_t
-mem_read(Cpu *cpu, uint16_t addr) {
-    uint8_t result = *(cpu->mem + addr);
+mem_read(uint8_t *mem, size_t addr) {
+    uint8_t result = *(mem + addr);
 
     return result;
 }
 
 uint16_t
-mem_read16(Cpu *cpu, uint16_t addr) {
-    uint16_t result = *(uint16_t *)(cpu->mem + addr);
+mem_read16(uint8_t *mem, size_t addr) {
+    uint16_t result = *(uint16_t *)(mem + addr);
 
     return result;
 }
 
-void
-mem_write(Cpu *cpu, uint16_t addr, uint8_t val) {
-    *(cpu->mem + addr) = val;
+uint8_t
+mem_write(uint8_t *mem, size_t addr, uint8_t val) {
+    *(mem + addr) = val;
+
+    return BYTES(1);
+}
+
+uint8_t
+mem_write16(uint8_t *mem, size_t addr, uint16_t val) {
+    *(uint16_t *)(mem + addr) = val;
+
+    return BYTES(2);
 }
 
 void
-mem_write16(Cpu *cpu, uint16_t addr, uint16_t val) {
-    *(uint16_t *)(cpu->mem + addr) = val;
-}
-
-void
-mem_print(Cpu *cpu, uint16_t addr, char *label) {
+mem_print(Cpu *cpu, size_t addr, char *label, size_t n = 8) {
     printf("\n======================== %s =============================\n", label);
-    printf("MEM 0x%04x: ", addr);
-    for ( uint16_t i = 0; i < 8; ++i ) {
-        auto val = mem_read(cpu, addr+i);
+    printf("MEM 0x%04zx: ", addr);
+    for ( uint16_t i = 0; i < n; ++i ) {
+        auto val = mem_read(cpu->mem, addr+i);
         printf("0x%02x ", val);
     }
     printf("\n==========================================================\n");
 }
 
 uint8_t
-instr_fetch(Cpu *cpu) {
+fetch(Cpu *cpu) {
     uint8_t instr = *(cpu->mem + cpu->pc);
-    cpu->pc += 1;
+    cpu->pc += BYTES(1);
 
     return instr;
 }
 
 uint16_t
-instr_fetch16(Cpu *cpu) {
+fetch16(Cpu *cpu) {
     uint16_t instr = *(uint16_t *)(cpu->mem + cpu->pc);
-    cpu->pc += 2;
+    cpu->pc += BYTES(2);
 
     return instr;
 }
 
 void
-instr_exec(Cpu *cpu, uint16_t instr) {
+push(Cpu *cpu, uint16_t val) {
+    mem_write16(cpu->mem, cpu->sp, val);
+    cpu->sp -= BYTES(2);
+    cpu->stack_frame_size += 2;
+}
+
+uint16_t
+pop(Cpu *cpu) {
+    cpu->sp += 2;
+    uint16_t result = mem_read16(cpu->mem, cpu->sp);
+    cpu->stack_frame_size -= 2;
+
+    return result;
+}
+
+void
+push_state(Cpu *cpu) {
+    push(cpu, reg_read(cpu, REG_R1));
+    push(cpu, reg_read(cpu, REG_R2));
+    push(cpu, reg_read(cpu, REG_R3));
+    push(cpu, reg_read(cpu, REG_R4));
+    push(cpu, reg_read(cpu, REG_R5));
+    push(cpu, reg_read(cpu, REG_R6));
+    push(cpu, reg_read(cpu, REG_R7));
+    push(cpu, reg_read(cpu, REG_R8));
+    push(cpu, cpu->pc);
+    push(cpu, cpu->stack_frame_size+2);
+
+    cpu->fp = cpu->sp;
+    cpu->stack_frame_size = 0;
+}
+
+void
+pop_state(Cpu *cpu) {
+    cpu->sp = cpu->fp;
+    cpu->stack_frame_size = pop(cpu);
+    auto stack_frame_size = cpu->stack_frame_size;
+
+    cpu->pc = pop(cpu);
+    reg_write(cpu, REG_R8, pop(cpu));
+    reg_write(cpu, REG_R7, pop(cpu));
+    reg_write(cpu, REG_R6, pop(cpu));
+    reg_write(cpu, REG_R5, pop(cpu));
+    reg_write(cpu, REG_R4, pop(cpu));
+    reg_write(cpu, REG_R3, pop(cpu));
+    reg_write(cpu, REG_R2, pop(cpu));
+    reg_write(cpu, REG_R1, pop(cpu));
+
+    auto num_args = pop(cpu);
+    for ( int i = 0; i < num_args; ++i ) {
+        pop(cpu);
+    }
+
+    cpu->fp = cpu->fp + stack_frame_size;
+}
+
+void
+exec(Cpu *cpu, uint16_t instr) {
     switch ( instr ) {
         case OP_MOV_IMM_REG: {
-            uint16_t imm = instr_fetch16(cpu);
-            uint8_t reg = instr_fetch(cpu);
+            uint16_t imm = fetch16(cpu);
+            uint8_t reg = fetch(cpu);
 
             reg_write(cpu, reg, imm);
         } break;
 
         case OP_MOV_REG_REG: {
-            auto src = instr_fetch(cpu);
-            auto dst = instr_fetch(cpu);
+            auto src = fetch(cpu);
+            auto dst = fetch(cpu);
             uint16_t val = reg_read(cpu, src);
 
             reg_write(cpu, dst, val);
         } break;
 
         case OP_MOV_REG_MEM: {
-            auto reg  = instr_fetch(cpu);
-            auto addr = instr_fetch16(cpu);
+            auto reg  = fetch(cpu);
+            auto addr = fetch16(cpu);
             uint16_t val = reg_read(cpu, reg);
 
-            mem_write16(cpu, addr, val);
+            mem_write16(cpu->mem, addr, val);
         } break;
 
         case OP_MOV_MEM_REG: {
-            auto addr = instr_fetch16(cpu);
-            auto reg  = instr_fetch(cpu);
-            uint16_t val = mem_read16(cpu, addr);
+            auto addr = fetch16(cpu);
+            auto reg  = fetch(cpu);
+            uint16_t val = mem_read16(cpu->mem, addr);
 
             reg_write(cpu, reg, val);
         } break;
 
         case OP_ADD_REG_REG: {
-            auto r1 = instr_fetch(cpu);
-            auto r2 = instr_fetch(cpu);
+            auto r1 = fetch(cpu);
+            auto r2 = fetch(cpu);
 
             auto imm1 = reg_read(cpu, r1);
             auto imm2 = reg_read(cpu, r2);
@@ -186,15 +259,55 @@ instr_exec(Cpu *cpu, uint16_t instr) {
         } break;
 
         case OP_JMP_NEQ: {
-            auto imm = instr_fetch16(cpu);
-            auto addr = instr_fetch16(cpu);
+            auto imm = fetch16(cpu);
+            auto addr = fetch16(cpu);
             auto acc = reg_read(cpu, REG_ACC);
 
             if ( imm != acc ) {
                 cpu->pc = (uint8_t)addr;
             }
         } break;
+
+        case OP_PSH_IMM: {
+            auto val = fetch16(cpu);
+            push(cpu, val);
+        } break;
+
+        case OP_PSH_REG: {
+            auto reg = fetch(cpu);
+            auto val = reg_read(cpu, reg);
+            push(cpu, val);
+        } break;
+
+        case OP_POP: {
+            auto reg = fetch(cpu);
+            auto val = pop(cpu);
+            reg_write(cpu, reg, val);
+        } break;
+
+        case OP_CAL_IMM: {
+            auto addr = fetch16(cpu);
+            push_state(cpu);
+            cpu->pc = addr;
+        } break;
+
+        case OP_CAL_REG: {
+            auto reg = fetch(cpu);
+            auto addr = reg_read(cpu, reg);
+            push_state(cpu);
+            cpu->pc = addr;
+        } break;
+
+        case OP_RET: {
+            pop_state(cpu);
+        } break;
     }
+}
+
+void
+step(Cpu *cpu) {
+    auto instr = fetch(cpu);
+    exec(cpu, instr);
 }
 
 void
@@ -203,12 +316,6 @@ cpu_print(Cpu *cpu) {
     for ( int i = REG_R1; i < REG_COUNT; ++i ) {
         printf("[REG%d] = 0x%04x\n", i, cpu->regs[i]);
     }
-}
-
-void
-cpu_step(Cpu *cpu) {
-    auto instr = instr_fetch(cpu);
-    instr_exec(cpu, instr);
 }
 
 Cpu *
@@ -224,6 +331,9 @@ cpu_create(void *mem, size_t size) {
         result->regs[i] = 0;
     }
 
+    result->sp = result->size - 2;
+    result->fp = result->sp;
+
     return result;
 }
 
@@ -234,49 +344,73 @@ void debug_print(Cpu *cpu) {
 }
 
 int main(int argc, char const* argv[]) {
-    int mem_size = 256*256;
+    size_t mem_size = 256*256;
 
     uint8_t *mem = mem_create(mem_size);
     Cpu *cpu = cpu_create(mem, mem_size);
 
-    uint32_t pc = 0;
-    uint8_t start = 0;
+    uint16_t pc = 0;
+    uint16_t subroutine_address = 0x3000;
 
-    mem[pc++] = OP_MOV_MEM_REG;
-    mem[pc++] = 0x00;
-    mem[pc++] = 0x01;
-    mem[pc++] = REG_R1;
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x3333);
 
-    mem[pc++] = OP_MOV_IMM_REG;
-    mem[pc++] = 0x01;
-    mem[pc++] = 0x00;
-    mem[pc++] = REG_R2;
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x2222);
 
-    mem[pc++] = OP_ADD_REG_REG;
-    mem[pc++] = REG_R1;
-    mem[pc++] = REG_R2;
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x1111);
 
-    mem[pc++] = OP_MOV_REG_MEM;
-    mem[pc++] = REG_ACC;
-    mem[pc++] = 0x00;
-    mem[pc++] = 0x01;
+    pc += mem_write(mem, pc, OP_MOV_IMM_REG);
+    pc += mem_write16(mem, pc, 0x1234);
+    pc += mem_write(mem, pc, REG_R1);
 
-    mem[pc++] = OP_JMP_NEQ;
-    mem[pc++] = 0x03;
-    mem[pc++] = 0x00;
-    mem[pc++] = start;
+    pc += mem_write(mem, pc, OP_MOV_IMM_REG);
+    pc += mem_write16(mem, pc, 0x5678);
+    pc += mem_write(mem, pc, REG_R4);
+
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x0000);
+
+    pc += mem_write(mem, pc, OP_CAL_IMM);
+    pc += mem_write16(mem, pc, subroutine_address);
+
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x4444);
+
+    pc = subroutine_address;
+
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x0102);
+
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x0304);
+
+    pc += mem_write(mem, pc, OP_PSH_IMM);
+    pc += mem_write16(mem, pc, 0x0506);
+
+    pc += mem_write(mem, pc, OP_MOV_IMM_REG);
+    pc += mem_write16(mem, pc, 0x0708);
+    pc += mem_write(mem, pc, REG_R1);
+
+    pc += mem_write(mem, pc, OP_MOV_IMM_REG);
+    pc += mem_write16(mem, pc, 0x090A);
+    pc += mem_write(mem, pc, REG_R8);
+
+    pc += mem_write(mem, pc, OP_RET);
 
     debug_print(cpu);
     mem_print(cpu, cpu->pc, "PC");
-    mem_print(cpu, 0x0100, "MEM");
+    mem_print(cpu, cpu->size - 1 - 42, "STACK", 43);
 
     for ( ;; ) {
         getchar();
 
-        cpu_step(cpu);
+        step(cpu);
+
         debug_print(cpu);
         mem_print(cpu, cpu->pc, "PC");
-        mem_print(cpu, 0x0100, "MEM");
+        mem_print(cpu, cpu->size - 1 - 42, "STACK", 43);
     }
 
     return 0;
