@@ -1,3 +1,13 @@
+#ifndef __PARSER_COMBINATOR_BASE__
+#define __PARSER_COMBINATOR_BASE__
+
+#include <stdbool.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <string.h>
+#include <stdlib.h>
+#include <stdarg.h>
+
 #include <initializer_list>
 
 namespace Urq {
@@ -12,19 +22,22 @@ Parser_Result parser_result_str(char *str, size_t len);
 Parser_Result parser_result_custom(void *val);
 Parser_State  parser_update_state(Parser_State in, size_t index, Parser_Result r);
 Parser_State  parser_update_result(Parser_State in, Parser_Result r);
-Parser_State  parser_update_error(Parser_State in, char *msg);
+Parser_State  parser_update_error(Parser_State in, char *fmt, ...);
 
 #define PARSER_PROC(name) Parser_State name(Parser *p, Parser_State state)
 typedef PARSER_PROC(Parser_Proc);
 
-#define PARSER_MAP_PROC(name) Parser_Result name(Parser_Result result, size_t index)
+#define PARSER_MAP_PROC(name) Parser_Result name(Parser_Result result, size_t index, void *user_data)
 typedef PARSER_MAP_PROC(Parser_Map);
 
-#define PARSER_CHAIN_PROC(name) Parser * name(Parser_Result result)
+#define PARSER_CHAIN_PROC(name) Parser * name(Parser_Result result, void *user_data)
 typedef PARSER_CHAIN_PROC(Parser_Chain);
 
 #define PARSER_ALLOCATOR(name) void * name(size_t size)
 typedef PARSER_ALLOCATOR(Alloc);
+
+#define PARSER_DEALLOCATOR(name) void name(void *mem)
+typedef PARSER_DEALLOCATOR(Dealloc);
 
 PARSER_ALLOCATOR(parser_alloc_default) {
     void *result = malloc(size);
@@ -32,7 +45,12 @@ PARSER_ALLOCATOR(parser_alloc_default) {
     return result;
 }
 
-Alloc *parser_alloc = parser_alloc_default;
+PARSER_DEALLOCATOR(parser_dealloc_default) {
+    free(mem);
+}
+
+Alloc   * parser_alloc   = parser_alloc_default;
+Dealloc * parser_dealloc = parser_dealloc_default;
 
 struct Parser_List {
     Parser ** elems;
@@ -46,9 +64,54 @@ struct Parser_Result_List {
     size_t          cap;
 };
 
+enum Parser_Result_Kind {
+    PARSER_RESULT_NONE,
+    PARSER_RESULT_CHR,
+    PARSER_RESULT_STR,
+    PARSER_RESULT_U64,
+    PARSER_RESULT_S64,
+    PARSER_RESULT_ARR,
+    PARSER_RESULT_CUSTOM,
+};
+struct Parser_Result {
+    Parser_Result_Kind kind;
+
+    union {
+        struct {
+            char val;
+        } chr;
+
+        struct {
+            char * val;
+            size_t len;
+        } str;
+
+        struct {
+            uint64_t val;
+        } u64;
+
+        struct {
+            int64_t val;
+        } s64;
+
+        struct {
+            Parser_Result_List val;
+            size_t len;
+        } arr;
+
+        struct {
+            void * val;
+        } custom;
+    };
+};
+
 struct Parser {
     char *str;
     char n[10];
+    int num;
+    char *msg;
+    Parser_Result val;
+    void *user_data;
 
     Parser_Map   * map_proc;
     Parser_Chain * chain_proc;
@@ -64,7 +127,7 @@ parser_push(Parser_List *list, Parser *p) {
         size_t new_cap = (list->cap < 16) ? 16 : list->cap*2;
         void *mem = parser_alloc(sizeof(Parser)*new_cap);
         memcpy(mem, list->elems, list->num_elems*sizeof(Parser));
-        free(list->elems);
+        parser_dealloc(list->elems);
 
         list->elems = (Parser **)mem;
         list->cap   = new_cap;
@@ -86,43 +149,13 @@ parser_entry(Parser_List *list, size_t i) {
     return result;
 }
 
-enum {
-    PARSER_RESULT_NONE,
-    PARSER_RESULT_CHR,
-    PARSER_RESULT_STR,
-    PARSER_RESULT_ARR,
-    PARSER_RESULT_CUSTOM,
-};
-struct Parser_Result {
-    uint32_t kind;
-
-    union {
-        struct {
-            char val;
-        } chr;
-
-        struct {
-            char * val;
-            size_t len;
-        } str;
-
-        struct {
-            Parser_Result_List val;
-        } arr;
-
-        struct {
-            void * val;
-        } custom;
-    };
-};
-
 void
 parser_result_push(Parser_Result_List *list, Parser_Result p) {
     if ( list->num_elems >= list->cap ) {
         size_t new_cap = (list->cap < 16) ? 16 : list->cap*2;
         void *mem = parser_alloc(sizeof(Parser_Result)*new_cap);
         memcpy(mem, list->elems, list->num_elems*sizeof(Parser_Result));
-        free(list->elems);
+        parser_dealloc(list->elems);
 
         list->elems = (Parser_Result *)mem;
         list->cap   = new_cap;
@@ -162,7 +195,7 @@ parser_create(Parser_Proc *proc) {
     return result;
 }
 
-Parser *whitespace = parser_create(
+Parser *Whitespace = parser_create(
     [](Parser *p, Parser_State state) {
         char *s = state.val+state.index;
         while ( *s == ' ' || *s == '\t' || *s == '\r' || *s == '\v' || *s == '\n' ) {
@@ -173,7 +206,7 @@ Parser *whitespace = parser_create(
     }
 );
 
-Parser *digits = parser_create(
+Parser *Digits = parser_create(
     [](Parser *p, Parser_State state) {
         char *s = state.val+state.index;
 
@@ -193,7 +226,7 @@ Parser *digits = parser_create(
     }
 );
 
-Parser *letters = parser_create(
+Parser *Letters = parser_create(
     [](Parser *p, Parser_State state) {
         char *s = state.val+state.index;
 
@@ -236,11 +269,32 @@ parser_result_str(char *str, size_t len) {
 }
 
 Parser_Result
+parser_result_u64(uint64_t val) {
+    Parser_Result result = {};
+
+    result.kind = PARSER_RESULT_U64;
+    result.u64.val = val;
+
+    return result;
+}
+
+Parser_Result
+parser_result_s64(int64_t val) {
+    Parser_Result result = {};
+
+    result.kind = PARSER_RESULT_S64;
+    result.s64.val = val;
+
+    return result;
+}
+
+Parser_Result
 parser_result_arr(Parser_Result_List arr) {
     Parser_Result result = {};
 
     result.kind = PARSER_RESULT_ARR;
     result.arr.val = arr;
+    result.arr.len = arr.num_elems;
 
     return result;
 }
@@ -280,8 +334,19 @@ parser_update_result(Parser_State in, Parser_Result r) {
 }
 
 Parser_State
-parser_update_error(Parser_State in, char *msg) {
+parser_update_error(Parser_State in, char *fmt, ...) {
     Parser_State result = {};
+
+    va_list args;
+    va_start(args, fmt);
+    int size = 1 + vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+
+    char *msg = (char *)parser_alloc(size);
+
+    va_start(args, fmt);
+    vsnprintf(msg, size, fmt, args);
+    va_end(args);
 
     result.success = false;
     result.val     = in.val;
@@ -293,7 +358,40 @@ parser_update_error(Parser_State in, char *msg) {
 }
 
 Parser *
-chr(char c) {
+Fail(char *fmt, ...) {
+    va_list args;
+    va_start(args, fmt);
+    int size = 1 + vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
+
+    char *msg = (char *)parser_alloc(size);
+
+    va_start(args, fmt);
+    vsnprintf(msg, size, fmt, args);
+    va_end(args);
+
+    auto result = parser_create([](Parser *p, Parser_State state) {
+        return parser_update_error(state, p->msg);
+    });
+
+    result->msg = msg;
+
+    return result;
+}
+
+Parser *
+Succeed(Parser_Result val) {
+    auto result = parser_create([](Parser *p, Parser_State state) {
+        return parser_update_result(state, p->val);
+    });
+
+    result->val = val;
+
+    return result;
+}
+
+Parser *
+Chr(char c) {
     Parser *p = parser_create([](Parser *p, Parser_State state) {
         if ( !state.success ) {
             return state;
@@ -315,7 +413,7 @@ chr(char c) {
 }
 
 Parser *
-str(char *str) {
+Str(char *str) {
     Parser *p = parser_create([](Parser *p, Parser_State state) {
         if ( !state.success ) {
             return state;
@@ -350,7 +448,7 @@ str(char *str) {
 }
 
 Parser *
-number(int n) {
+Number(int n) {
     Parser *p = parser_create([](Parser *p, Parser_State state) {
         if ( !state.success ) {
             return state;
@@ -395,12 +493,7 @@ number(int n) {
 }
 
 Parser *
-seq_of(std::initializer_list<Parser *> s) {
-    Parser_List sequence = {};
-    for ( Parser *i : s ) {
-        parser_push(&sequence, i);
-    }
-
+Seq_Of(Parser_List sequence) {
     Parser *p = parser_create([](Parser *p, Parser_State state) {
         if ( !state.success ) {
             return state;
@@ -422,6 +515,10 @@ seq_of(std::initializer_list<Parser *> s) {
             parser_result_push(&results, new_state.result);
         }
 
+        if ( !new_state.success ) {
+            return new_state;
+        }
+
         return parser_update_result(new_state, parser_result_arr(results));
     });
 
@@ -431,7 +528,17 @@ seq_of(std::initializer_list<Parser *> s) {
 }
 
 Parser *
-choice(std::initializer_list<Parser *> s) {
+Seq_Of(std::initializer_list<Parser *> s) {
+    Parser_List sequence = {};
+    for ( Parser *i : s ) {
+        parser_push(&sequence, i);
+    }
+
+    return Seq_Of(sequence);
+}
+
+Parser *
+Choice(std::initializer_list<Parser *> s) {
     Parser_List sequence = {};
     for ( Parser *i : s ) {
         parser_push(&sequence, i);
@@ -463,7 +570,7 @@ choice(std::initializer_list<Parser *> s) {
 }
 
 Parser *
-chain(Parser *p, Parser_Chain *chain_proc) {
+Chain(Parser *p, Parser_Chain *chain_proc) {
     Parser *result = parser_create([](Parser *p, Parser_State state) {
         Parser_State new_state = p->p->proc(p->p, state);
 
@@ -471,7 +578,7 @@ chain(Parser *p, Parser_Chain *chain_proc) {
             return new_state;
         }
 
-        Parser *new_parser = p->chain_proc(new_state.result);
+        Parser *new_parser = p->chain_proc(new_state.result, p->user_data);
 
         return new_parser->proc(new_parser, new_state);
     });
@@ -483,7 +590,7 @@ chain(Parser *p, Parser_Chain *chain_proc) {
 }
 
 Parser *
-map(Parser *p, Parser_Map *map_proc) {
+Map(Parser *p, Parser_Map *map_proc) {
 
     Parser *result = parser_create([](Parser *p, Parser_State state) {
         Parser_State new_state = p->p->proc(p->p, state);
@@ -493,7 +600,7 @@ map(Parser *p, Parser_Map *map_proc) {
         }
 
         return parser_update_state(new_state, new_state.index,
-                p->map_proc(new_state.result, new_state.index));
+                p->map_proc(new_state.result, new_state.index, p->user_data));
     });
 
     result->p = p;
@@ -503,7 +610,7 @@ map(Parser *p, Parser_Map *map_proc) {
 }
 
 Parser *
-error_map(Parser *p, Parser_Map *map_proc) {
+Error_Map(Parser *p, Parser_Map *map_proc) {
 
     Parser *result = parser_create([](Parser *p, Parser_State state) {
         Parser_State new_state = p->p->proc(p->p, state);
@@ -512,7 +619,8 @@ error_map(Parser *p, Parser_Map *map_proc) {
             return new_state;
         }
 
-        Parser_Result map_proc_result = p->map_proc(new_state.result, new_state.index);
+        Parser_Result map_proc_result = p->map_proc(new_state.result,
+                new_state.index, p->user_data);
 
         return parser_update_error(new_state, map_proc_result.str.val);
     });
@@ -524,7 +632,7 @@ error_map(Parser *p, Parser_Map *map_proc) {
 }
 
 Parser *
-many(Parser *p) {
+Many(Parser *p) {
 
     Parser *result = parser_create([](Parser *p, Parser_State state) {
         Parser_Result_List results = {};
@@ -550,7 +658,7 @@ many(Parser *p) {
 }
 
 Parser *
-many1(Parser *parser) {
+Many1(Parser *parser) {
     Parser *result = parser_create([](Parser *p, Parser_State state) {
         Parser_Result_List results = {};
         Parser_State new_state = state;
@@ -579,7 +687,7 @@ many1(Parser *parser) {
 }
 
 auto
-sep_by(Parser *separator_parser) {
+Sep_By(Parser *separator_parser) {
     auto result = [separator_parser](Parser *content_parser) -> Parser* {
         Parser *parser = parser_create([](Parser *p, Parser_State state) {
             Parser_Result_List results = {};
@@ -619,16 +727,17 @@ sep_by(Parser *separator_parser) {
 }
 
 auto
-sep_by1(Parser *separator_parser) {
-    auto result = [&](Parser *p) -> Parser* {
-        p->p = separator_parser;
-
+Sep_By1(Parser *separator_parser) {
+    auto result = [separator_parser](Parser *content_parser) -> Parser* {
         Parser *parser = parser_create([](Parser *p, Parser_State state) {
             Parser_Result_List results = {};
             Parser_State new_state = state;
 
+            auto content_parser = p->p;
+            auto separator_parser = content_parser->p;
+
             for ( ;; ) {
-                new_state = p->p->proc(p, new_state);
+                new_state = content_parser->proc(content_parser, new_state);
 
                 if ( !new_state.success ) {
                     break;
@@ -636,7 +745,7 @@ sep_by1(Parser *separator_parser) {
 
                 parser_result_push(&results, new_state.result);
 
-                Parser_State separator_state = p->p->p->proc(p->p->p, new_state);
+                Parser_State separator_state = separator_parser->proc(separator_parser, new_state);
 
                 if ( !separator_state.success ) {
                     break;
@@ -652,7 +761,8 @@ sep_by1(Parser *separator_parser) {
             return parser_update_result(new_state, parser_result_arr(results));
         });
 
-        parser->p = p;
+        content_parser->p = separator_parser;
+        parser->p = content_parser;
 
         return parser;
     };
@@ -661,14 +771,14 @@ sep_by1(Parser *separator_parser) {
 }
 
 auto
-between(Parser *left, Parser *right) {
+Between(Parser *left, Parser *right) {
     auto result = [=](Parser *p) -> Parser* {
-        Parser *result = map(
-            seq_of({
+        Parser *result = Map(
+            Seq_Of({
                 left, p, right
             }),
 
-            [](Parser_Result result, size_t index) {
+            [](Parser_Result result, size_t index, void *user_data) {
                 return parser_result_entry(&result.arr.val, 1);
             }
         );
@@ -679,9 +789,16 @@ between(Parser *left, Parser *right) {
     return result;
 }
 
-Parser *
-empty() {
-    return NULL;
+Parser *Empty = NULL;
+
+void
+fill_empty(Parser *dest, Parser *src) {
+    for ( int i = 0; i < dest->sequence.num_elems; ++i ) {
+        if ( dest->sequence.elems[i] == NULL ) {
+            dest->sequence.elems[i] = src;
+            break;
+        }
+    }
 }
 
 Parser_State
@@ -697,36 +814,37 @@ run(Parser *p, char *str) {
     return result;
 }
 
-void
-fill_empty(Parser *dest, Parser *src) {
-    for ( int i = 0; i < dest->sequence.num_elems; ++i ) {
-        if ( dest->sequence.elems[i] == NULL ) {
-            dest->sequence.elems[i] = src;
-            break;
-        }
-    }
-}
-
 namespace api {
+    using Urq::Between;
+    using Urq::Choice;
+    using Urq::Chr;
+    using Urq::Digits;
+    using Urq::Empty;
+    using Urq::Fail;
+    using Urq::Letters;
+    using Urq::Many1;
+    using Urq::Many;
+    using Urq::Number;
+    using Urq::Sep_By1;
+    using Urq::Sep_By;
+    using Urq::Seq_Of;
+    using Urq::Str;
+    using Urq::Succeed;
+    using Urq::Whitespace;
+
     using Urq::fill_empty;
-    using Urq::empty;
-    using Urq::chr;
-    using Urq::str;
-    using Urq::number;
-    using Urq::seq_of;
-    using Urq::choice;
-    using Urq::many;
-    using Urq::many1;
-    using Urq::sep_by;
-    using Urq::between;
-    using Urq::whitespace;
-    using Urq::digits;
-    using Urq::letters;
     using Urq::run;
-    using Urq::parser_result_str;
+
+    using Urq::parser_result_arr;
+    using Urq::parser_result_chr;
     using Urq::parser_result_custom;
-    using Urq::parser_update_state;
+    using Urq::parser_result_s64;
+    using Urq::parser_result_str;
+    using Urq::parser_result_u64;
+
     using Urq::parser_update_error;
+    using Urq::parser_update_result;
+    using Urq::parser_update_state;
 
     using Urq::Parser;
     using Urq::Parser_State;
@@ -734,4 +852,6 @@ namespace api {
 };
 
 };
+
+#endif
 
