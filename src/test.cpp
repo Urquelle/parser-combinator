@@ -2,7 +2,7 @@
 
 #include "combinator.cpp"
 
-PARSER_ALLOCATOR(custom_alloc) {
+ALLOCATOR(custom_alloc) {
     printf("%zd bytes reserviert\n", size);
     void *mem = malloc(size);
 
@@ -86,6 +86,10 @@ parser_test() {
     parser = brckt_proc(comma_proc(Digits));
     result = run(parser, "[1,2,3,4,5]");
     assert(result.success && result.result.arr.len == 5);
+
+    parser = Regex("[a-z]+");
+    result = run(parser, "abcasj");
+    int x = 5;
 }
 
 int main(int argc, char const* argv[]) {

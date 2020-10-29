@@ -7,6 +7,7 @@
 #include <string.h>
 #include <stdlib.h>
 #include <stdarg.h>
+#include <regex>
 
 #include <initializer_list>
 
@@ -18,6 +19,7 @@ struct Parser_State;
 struct Parser_Result;
 struct Parser_List;
 
+Parser_Result parser_result_chr(char str);
 Parser_Result parser_result_str(char *str, size_t len);
 Parser_Result parser_result_custom(void *val);
 Parser_State  parser_update_state(Parser_State in, size_t index, Parser_Result r);
@@ -33,19 +35,23 @@ typedef PARSER_MAP_PROC(Parser_Map);
 #define PARSER_CHAIN_PROC(name) Parser * name(Parser_Result result, void *user_data)
 typedef PARSER_CHAIN_PROC(Parser_Chain);
 
-#define PARSER_ALLOCATOR(name) void * name(size_t size)
-typedef PARSER_ALLOCATOR(Alloc);
+#ifndef ALLOCATOR
+#define ALLOCATOR(name) void * name(size_t size)
+#endif
 
-#define PARSER_DEALLOCATOR(name) void name(void *mem)
-typedef PARSER_DEALLOCATOR(Dealloc);
-
-PARSER_ALLOCATOR(parser_alloc_default) {
+typedef ALLOCATOR(Alloc);
+ALLOCATOR(parser_alloc_default) {
     void *result = malloc(size);
 
     return result;
 }
 
-PARSER_DEALLOCATOR(parser_dealloc_default) {
+#ifndef DEALLOCATOR
+#define DEALLOCATOR(name) void name(void *mem)
+#endif
+
+typedef DEALLOCATOR(Dealloc);
+DEALLOCATOR(parser_dealloc_default) {
     free(mem);
 }
 
@@ -203,6 +209,22 @@ Parser *Whitespace = parser_create(
         }
 
         return parser_update_state(state, s-state.val, parser_result_str(state.val+state.index, s-(state.val+state.index)));
+    }
+);
+
+Parser *Digit = parser_create(
+    [](Parser *p, Parser_State state) {
+        char *s = state.val+state.index;
+
+        if ( !s || !strlen(s) ) {
+            return parser_update_error(state, "Digit: ende der eingabe erreicht");
+        }
+
+        if ( s[0] < '0' || s[0] > '9' ) {
+            return parser_update_error(state, "Digit: keine ziffer gefunden");
+        }
+
+        return parser_update_state(state, state.index + 1, parser_result_str(s, 1));
     }
 );
 
@@ -570,6 +592,36 @@ Choice(std::initializer_list<Parser *> s) {
 }
 
 Parser *
+Regex(char *rgx) {
+    Parser *p = parser_create([](Parser *p, Parser_State state) {
+        if ( !state.success ) {
+            return state;
+        }
+
+        std::cmatch meta;
+        if ( !std::regex_match(state.val + state.index, meta, std::regex(p->str)) ) {
+            return parser_update_error(state,
+                    "Regex: konnte keine übereinstimmung des ausdrucks '%s' in '%s' finden",
+                    p->str, state.val + state.index);
+        }
+
+        size_t len = meta.str(0).length();
+        char *str = (char *)parser_alloc(len + 1);
+        for ( int i = 0; i < len; ++i ) {
+            str[i] = meta.str(0)[i];
+        }
+        str[len] = '\0';
+
+        return parser_update_state(state, state.index + len,
+                parser_result_str(str, len));;
+    });
+
+    p->str = rgx;
+
+    return p;
+}
+
+Parser *
 Chain(Parser *p, Parser_Chain *chain_proc) {
     Parser *result = parser_create([](Parser *p, Parser_State state) {
         Parser_State new_state = p->p->proc(p->p, state);
@@ -818,6 +870,7 @@ namespace api {
     using Urq::Between;
     using Urq::Choice;
     using Urq::Chr;
+    using Urq::Digit;
     using Urq::Digits;
     using Urq::Empty;
     using Urq::Fail;
@@ -825,6 +878,7 @@ namespace api {
     using Urq::Many1;
     using Urq::Many;
     using Urq::Number;
+    using Urq::Regex;
     using Urq::Sep_By1;
     using Urq::Sep_By;
     using Urq::Seq_Of;

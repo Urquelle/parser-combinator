@@ -2,7 +2,7 @@
 
 #include "combinator.cpp"
 
-PARSER_ALLOCATOR(custom_alloc) {
+ALLOCATOR(custom_alloc) {
     printf("%zd bytes reserviert\n", size);
     void *mem = malloc(size);
 

@@ -9,6 +9,5 @@ pushd %BUILD_PATH%
 cl %compiler_flags% %PROJECT_PATH%\src\test.cpp -Feparser_combinator_test.exe /link %linker_flags%
 cl %compiler_flags% %PROJECT_PATH%\examples\lisp.cpp -Feparser_combinator_lisp.exe /link %linker_flags%
 cl %compiler_flags% %PROJECT_PATH%\examples\bit.cpp -Feparser_combinator_bit.exe /link %linker_flags%
-cl %compiler_flags% %PROJECT_PATH%\examples\vm.cpp -Feparser_combinator_vm.exe /link %linker_flags%
 
 popd
